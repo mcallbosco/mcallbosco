@@ -1,0 +1,84 @@
+name: Temporary Flickr OCR build
+
+on:
+  push:
+    paths:
+      - '.github/workflows/chatgpt-flickr-ocr.yml'
+
+permissions:
+  contents: write
+
+env:
+  ALBUM_URL: https://www.flickr.com/photos/dolinick/albums/72157613879612208/
+  PHOTOSET_ID: '72157613879612208'
+  FLICKR_USER_ID: '46255555@N00'
+  OUTPUT_PDF: Commuta-Car_OCR_searchable.pdf
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record workflow run identifier
+        continue-on-error: true
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          printf '%s\n' "$GITHUB_RUN_ID" > tmp_chatgpt_flickr_run_id.txt
+          git add tmp_chatgpt_flickr_run_id.txt
+          git commit -m 'Record temporary Flickr OCR workflow run'
+          git push
+
+      - name: Install OCR and PDF dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ghostscript qpdf tesseract-ocr poppler-utils
+          python -m pip install --upgrade pip
+          python -m pip install pillow requests img2pdf ocrmypdf
+
+      - name: Download and assemble album
+        run: python tmp_chatgpt_flickr_ocr.py
+
+      - name: OCR the PDF
+        run: |
+          ocrmypdf \
+            --language eng \
+            --rotate-pages \
+            --deskew \
+            --skip-text \
+            --optimize 1 \
+            --jobs 2 \
+            --title 'Commuta-Car' \
+            --author 'DOLINICK' \
+            --subject 'OCR-searchable compilation of Flickr album 72157613879612208' \
+            /tmp/album_image_only.pdf "$OUTPUT_PDF"
+
+      - name: Verify PDF
+        run: |
+          set -euo pipefail
+          qpdf --check "$OUTPUT_PDF" | tee verification.txt
+          pages="$(pdfinfo "$OUTPUT_PDF" | awk '/^Pages:/ {print $2}')"
+          test "$pages" = '184'
+          pdftotext "$OUTPUT_PDF" extracted.txt
+          chars="$(tr -d '[:space:]' < extracted.txt | wc -c)"
+          test "$chars" -gt 100
+          {
+            echo "Pages: $pages"
+            echo "Non-whitespace OCR characters: $chars"
+            echo "File size bytes: $(stat -c %s "$OUTPUT_PDF")"
+            echo "SHA256: $(sha256sum "$OUTPUT_PDF" | awk '{print $1}')"
+          } | tee -a verification.txt
+          cp /tmp/album_metadata.json album_metadata.json
+
+      - name: Upload searchable PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: commuta-car-ocr-${{ github.run_id }}
+          path: |
+            Commuta-Car_OCR_searchable.pdf
+            album_metadata.json
+            verification.txt
+          compression-level: 0
+          retention-days: 1
